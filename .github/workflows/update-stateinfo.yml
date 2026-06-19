@@ -1,0 +1,49 @@
+name: Update stateinfo.json
+
+# Regenerate stateinfo.json whenever tracked files change on main.
+# Covers add / modify / rename / remove (rename = remove + add).
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "stateinfo.json"   # avoid re-triggering on our own update commit
+  workflow_dispatch: {}     # allow manual runs
+
+# Only one run at a time; cancel stale ones.
+concurrency:
+  group: update-stateinfo-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  update-stateinfo:
+    runs-on: ubuntu-latest
+    # Loop guard: skip commits already made by this workflow.
+    if: ${{ github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip stateinfo]') }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Regenerate stateinfo.json
+        run: python scripts/update_stateinfo.py
+
+      - name: Commit changes if any
+        run: |
+          if [ -z "$(git status --porcelain stateinfo.json)" ]; then
+            echo "No changes to stateinfo.json; skipping commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add stateinfo.json
+          git commit -m "chore: update stateinfo.json [skip stateinfo]"
+          git push
