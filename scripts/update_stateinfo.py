@@ -1,42 +1,30 @@
 #!/usr/bin/env python3
-"""Generate stateinfo.json: a map of tracked files to their SHA-256 hash.
+"""Maintain stateinfo.json and normalize numbered chunk files.
 
-The hash is uppercase hexadecimal. Keys are sorted for deterministic output.
-Run from the repository root. See .github/workflows/update-stateinfo.yml.
+Rules:
+- Files matching <base>.NNN where NNN is exactly 3 digits (.000-.999) are not
+  kept in the repo. For each <base>, the chunk most recently changed in the
+  triggering commit wins; it is renamed to <base>_ggpo.fs and the rest are
+  deleted. No content transformation. An existing <base>_ggpo.fs is replaced
+  only when the new content hash differs.
+- *.fs files are tracked in stateinfo.json (filename -> SHA-256, uppercase).
+- Everything else is ignored.
+
+The list of files changed by the push is passed via the CHANGED_FILES env var
+(newline-separated, oldest-to-newest change order). Used only to pick the
+"most recently changed" chunk per base.
 """
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import json
 import os
+import re
 import sys
 
-# Output file (relative to repo root).
 STATE_FILE = "stateinfo.json"
-
-# Directories never walked into.
 EXCLUDE_DIRS = {".git", ".github", "scripts", ".vscode", ".idea", "node_modules"}
-
-# Files never hashed (the state file itself, VCS/CI metadata, etc.).
-EXCLUDE_FILES = {STATE_FILE, ".gitignore", ".gitattributes"}
-
-# Only files matching one of these glob patterns are tracked.
-# Override by setting STATEINFO_PATTERNS (space- or comma-separated globs).
-# Default "*" tracks every file not otherwise excluded.
-DEFAULT_PATTERNS = ["*"]
-
-
-def get_patterns():
-    raw = os.environ.get("STATEINFO_PATTERNS", "").strip()
-    if not raw:
-        return DEFAULT_PATTERNS
-    parts = [p.strip() for p in raw.replace(",", " ").split()]
-    return [p for p in parts if p] or DEFAULT_PATTERNS
-
-
-def matches(name, patterns):
-    return any(fnmatch.fnmatch(name, pat) for pat in patterns)
+CHUNK_RE = re.compile(r"^(?P<base>.+)\.(?P<num>\d{3})$")
 
 
 def sha256_upper(path):
@@ -47,54 +35,83 @@ def sha256_upper(path):
     return h.hexdigest().upper()
 
 
-def build_state(root, patterns):
-    state = {}
+def iter_files(root):
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
-        for filename in filenames:
-            if filename in EXCLUDE_FILES:
-                continue
-            if not matches(filename, patterns):
-                continue
-            abspath = os.path.join(dirpath, filename)
-            relpath = os.path.relpath(abspath, root).replace(os.sep, "/")
-            state[relpath] = sha256_upper(abspath)
+        for name in filenames:
+            abspath = os.path.join(dirpath, name)
+            rel = os.path.relpath(abspath, root).replace(os.sep, "/")
+            yield rel, abspath
+
+
+def changed_order():
+    raw = os.environ.get("CHANGED_FILES", "")
+    order = {}
+    for i, line in enumerate(raw.splitlines()):
+        p = line.strip().replace(os.sep, "/")
+        if p:
+            order[p] = i  # larger index == changed more recently
+    return order
+
+
+def normalize_chunks(root, order):
+    """Pick winning chunk per base, rename to <base>_ggpo.fs, delete chunks."""
+    groups = {}
+    for rel, abspath in list(iter_files(root)):
+        m = CHUNK_RE.match(os.path.basename(rel))
+        if not m:
+            continue
+        d = os.path.dirname(rel)
+        base = (d + "/" + m.group("base")) if d else m.group("base")
+        groups.setdefault(base, []).append((rel, abspath))
+
+    for base, members in groups.items():
+        # Winner: most recently changed in the push; fall back to highest suffix.
+        def rank(item):
+            rel = item[0]
+            return (order.get(rel, -1), rel)
+        winner_rel, winner_abs = max(members, key=rank)
+        target_rel = base + "_ggpo.fs"
+        target_abs = os.path.join(root, target_rel.replace("/", os.sep))
+
+        new_hash = sha256_upper(winner_abs)
+        old_hash = sha256_upper(target_abs) if os.path.exists(target_abs) else None
+        if old_hash != new_hash:
+            with open(winner_abs, "rb") as src, open(target_abs, "wb") as dst:
+                dst.write(src.read())
+        # Remove all chunk files (the raw .NNN must not be hosted).
+        for rel, abspath in members:
+            if os.path.exists(abspath):
+                os.remove(abspath)
+
+
+def build_state(root):
+    state = {}
+    for rel, abspath in iter_files(root):
+        if rel == STATE_FILE:
+            continue
+        if rel.endswith(".fs"):
+            state[rel] = sha256_upper(abspath)
     return state
 
 
-def load_existing(path):
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except (json.JSONDecodeError, OSError):
-        return None
-
-
 def serialize(state):
-    # Sorted keys => deterministic ordering; trailing newline for clean diffs.
     return json.dumps(state, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
 def main():
     root = os.getcwd()
-    patterns = get_patterns()
-    new_state = build_state(root, patterns)
-    new_text = serialize(new_state)
-
+    normalize_chunks(root, changed_order())
+    new_text = serialize(build_state(root))
     out_path = os.path.join(root, STATE_FILE)
-    existing = load_existing(out_path)
-    if existing == new_state and os.path.exists(out_path):
-        # Compare serialized form too, so formatting drift is corrected.
+    if os.path.exists(out_path):
         with open(out_path, "r", encoding="utf-8") as fh:
             if fh.read() == new_text:
-                print("stateinfo.json already up to date; no changes.")
+                print("stateinfo.json already up to date.")
                 return 0
-
     with open(out_path, "w", encoding="utf-8") as fh:
         fh.write(new_text)
-    print("stateinfo.json updated with %d entr%s." % (len(new_state), "y" if len(new_state) == 1 else "ies"))
+    print("stateinfo.json written.")
     return 0
 
 
