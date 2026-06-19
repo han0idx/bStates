@@ -1,15 +1,10 @@
 name: Update stateinfo.json
 
-# Regenerate stateinfo.json whenever tracked files change on main.
-# Covers add / modify / rename / remove (rename = remove + add).
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "stateinfo.json"   # avoid re-triggering on our own update commit
-  workflow_dispatch: {}     # allow manual runs
+  workflow_dispatch: {}
 
-# Only one run at a time; cancel stale ones.
 concurrency:
   group: update-stateinfo-${{ github.ref }}
   cancel-in-progress: true
@@ -20,30 +15,47 @@ permissions:
 jobs:
   update-stateinfo:
     runs-on: ubuntu-latest
-    # Loop guard: skip commits already made by this workflow.
     if: ${{ github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip stateinfo]') }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.x"
 
-      - name: Regenerate stateinfo.json
+      - name: Collect changed files from the push
+        id: changed
+        run: |
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+          if [ -z "$BEFORE" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            FILES="$(git diff-tree --no-commit-id --name-only -r "$AFTER")"
+          else
+            FILES="$(git diff --name-only "$BEFORE" "$AFTER")"
+          fi
+          {
+            echo "files<<EOF"
+            echo "$FILES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Normalize chunks and regenerate stateinfo.json
+        env:
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
         run: python scripts/update_stateinfo.py
 
       - name: Commit changes if any
         run: |
-          if [ -z "$(git status --porcelain stateinfo.json)" ]; then
-            echo "No changes to stateinfo.json; skipping commit."
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Nothing changed; skipping commit."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add stateinfo.json
+          git add -A
           git commit -m "chore: update stateinfo.json [skip stateinfo]"
           git push
