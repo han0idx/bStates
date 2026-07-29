@@ -1,4 +1,4 @@
-name: Update stateinfo.json
+name: Update statesinfo.json
 
 on:
   push:
@@ -43,7 +43,7 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Normalize chunks and regenerate stateinfo.json
+      - name: Normalize chunks and regenerate statesinfo.json
         env:
           CHANGED_FILES: ${{ steps.changed.outputs.files }}
         run: python scripts/update_stateinfo.py
@@ -57,5 +57,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "chore: update stateinfo.json [skip stateinfo]"
+          git commit -m "chore: update statesinfo.json [skip stateinfo]"
           git push
