@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Maintain stateinfo.json and normalize numbered chunk files.
+"""Maintain statesinfo.json and normalize numbered chunk files.
 
 Rules:
 - Files matching <base>.NNN where NNN is exactly 3 digits (.000-.999) are not
@@ -7,7 +7,7 @@ Rules:
   triggering commit wins; it is renamed to <base>_ggpo.fs and the rest are
   deleted. No content transformation. An existing <base>_ggpo.fs is replaced
   only when the new content hash differs.
-- *.fs files are tracked in stateinfo.json (filename -> SHA-256, uppercase).
+- *.fs files are tracked in statesinfo.json (filename -> SHA-256, uppercase).
 - Everything else is ignored.
 
 The list of files changed by the push is passed via the CHANGED_FILES env var
@@ -22,7 +22,7 @@ import os
 import re
 import sys
 
-STATE_FILE = "stateinfo.json"
+STATE_FILE = "statesinfo.json"
 EXCLUDE_DIRS = {".git", ".github", "scripts", ".vscode", ".idea", "node_modules"}
 CHUNK_RE = re.compile(r"^(?P<base>.+)\.(?P<num>\d{3})$")
 
@@ -107,11 +107,11 @@ def main():
     if os.path.exists(out_path):
         with open(out_path, "r", encoding="utf-8") as fh:
             if fh.read() == new_text:
-                print("stateinfo.json already up to date.")
+                print("statesinfo.json already up to date.")
                 return 0
     with open(out_path, "w", encoding="utf-8") as fh:
         fh.write(new_text)
-    print("stateinfo.json written.")
+    print("statesinfo.json written.")
     return 0
 
 
